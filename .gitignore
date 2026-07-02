@@ -6,3 +6,5 @@ src/femllm_pb2_grpc.py
 __pycache__/
 *.pyc
 .pytest_cache/
+.worktrees/
+.DS_Store
