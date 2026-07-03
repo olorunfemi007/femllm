@@ -16,29 +16,36 @@ class Worker:
         self._pending: list[tuple[str, torch.Tensor, torch.Tensor, int]] = []
         self._results: dict[str, torch.Tensor] = {}
         self._stopped = False
+        self._belt_error = None  # type: Exception | None
         self._belt_thread = threading.Thread(target=self._run_belt, daemon=True)
         self._belt_thread.start()
 
     def _run_belt(self) -> None:
-        while True:
-            with self._cv:
-                if self._stopped:
-                    return
-                current_start = self.streamer.current_start_layer()
-                has_pending = any(sl == current_start for (_, _, _, sl) in self._pending)
-                if has_pending:
-                    # give near-simultaneous stragglers a short window to join this round
-                    self._cv.wait(timeout=BATCH_COLLECTION_WINDOW_SECONDS)
-                batch = [(rid, h, p) for (rid, h, p, sl) in self._pending if sl == current_start]
-                self._pending = [item for item in self._pending if item[3] != current_start]
-
-            if batch:
-                batch_results = self._compute_chunk(batch, current_start)
+        try:
+            while True:
                 with self._cv:
-                    self._results.update(batch_results)
-                    self._cv.notify_all()
+                    if self._stopped:
+                        return
+                    current_start = self.streamer.current_start_layer()
+                    has_pending = any(sl == current_start for (_, _, _, sl) in self._pending)
+                    if has_pending:
+                        # give near-simultaneous stragglers a short window to join this round
+                        self._cv.wait(timeout=BATCH_COLLECTION_WINDOW_SECONDS)
+                    batch = [(rid, h, p) for (rid, h, p, sl) in self._pending if sl == current_start]
+                    self._pending = [item for item in self._pending if item[3] != current_start]
 
-            self.streamer.advance()
+                if batch:
+                    batch_results = self._compute_chunk(batch, current_start)
+                    with self._cv:
+                        self._results.update(batch_results)
+                        self._cv.notify_all()
+
+                self.streamer.advance()
+        except Exception as e:
+            with self._cv:
+                self._belt_error = e
+                self._cv.notify_all()
+            return
 
     def _compute_chunk(
         self, batch: list[tuple[str, torch.Tensor, torch.Tensor]], start_layer_idx: int
@@ -82,15 +89,22 @@ class Worker:
 
         return results
 
+    # Concurrent calls must use unique request_ids (the coordinator uses uuid4 per request).
     def submit(
         self, request_id: str, hidden_states: torch.Tensor, position_ids: torch.Tensor, start_layer_idx: int
     ) -> torch.Tensor:
         with self._cv:
             self._pending.append((request_id, hidden_states, position_ids, start_layer_idx))
             self._cv.notify_all()
-            while request_id not in self._results:
+            while request_id not in self._results and not self._stopped and self._belt_error is None:
                 self._cv.wait()
-            return self._results.pop(request_id)
+            if request_id in self._results:
+                return self._results.pop(request_id)
+            if self._belt_error is not None:
+                raise RuntimeError(
+                    f"worker belt thread died: {self._belt_error}"
+                ) from self._belt_error
+            raise RuntimeError(f"worker closed while request {request_id!r} was pending")
 
     def forward(
         self, hidden_states: torch.Tensor, position_ids: torch.Tensor, request_id: str, start_layer_idx: int

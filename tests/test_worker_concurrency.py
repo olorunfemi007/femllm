@@ -1,4 +1,5 @@
 import threading
+import time
 import torch
 import pytest
 from src.femllm.worker import Worker
@@ -96,3 +97,26 @@ def test_concurrent_requests_have_isolated_kv_caches(shard_dir):
         assert k2.shape[2] == 7
     finally:
         worker.close()
+
+@pytest.mark.timeout(10)
+def test_close_unblocks_waiting_submit(shard_dir):
+    worker = Worker(f"{shard_dir}/worker_0.safetensors", [0, 4, 8, 12, 16, 20], TINYLLAMA_CONFIG, window_size=1)
+    hidden = torch.randn(1, 3, 2048, dtype=torch.bfloat16)
+    # move the belt past chunk 0 so a new chunk-0 request must wait a full lap
+    worker.forward(hidden, torch.arange(3), request_id="warm", start_layer_idx=0)
+
+    errors = {}
+
+    def blocked_call():
+        try:
+            worker.forward(hidden, torch.arange(3), request_id="stuck", start_layer_idx=0)
+        except RuntimeError as e:
+            errors["stuck"] = e
+
+    t = threading.Thread(target=blocked_call)
+    t.start()
+    time.sleep(0.2)  # let it enqueue and block
+    worker.close()
+    t.join(timeout=5)
+    assert not t.is_alive(), "submit() still blocked after close()"
+    # either it got served just before close, or it raised — both acceptable; hanging is not
