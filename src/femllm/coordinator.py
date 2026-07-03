@@ -18,9 +18,10 @@ from src.femllm.worker_server import tensor_to_bytes, bytes_to_tensor
 
 
 class Coordinator:
-    def __init__(self, model_dir: str, shard_dir: str, worker_ports: list[int], config: ModelConfig, num_users: int = 4):
+    def __init__(self, model_dir: str, shard_dir: str, worker_ports: list[int], config: ModelConfig, num_users: int = 4, max_context_length: int = 2048):
         self.config = config
         self.num_users = num_users
+        self.max_context_length = max_context_length
         self._admission = threading.Semaphore(num_users)
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
 
@@ -69,6 +70,11 @@ class Coordinator:
 
     def _generate_admitted(self, prompt: str, max_new_tokens: int) -> str:
         input_ids = self.tokenizer(prompt, return_tensors="pt")["input_ids"][0]
+        if len(input_ids) > self.max_context_length:
+            raise ValueError(
+                f"Prompt length {len(input_ids)} exceeds max_context_length={self.max_context_length}"
+            )
+
         request_id = str(uuid.uuid4())
 
         hidden = self.embed_tokens[input_ids].unsqueeze(0)
@@ -78,13 +84,17 @@ class Coordinator:
         next_token = self._logits(hidden).argmax(dim=-1)
         generated = [next_token.item()]
 
+        total_len = len(input_ids) + 1
         for step in range(max_new_tokens - 1):
+            if total_len >= self.max_context_length:
+                break
             position = len(input_ids) + step
             hidden = self.embed_tokens[next_token].unsqueeze(0)
             position_ids = torch.tensor([position])
             hidden = self._pipeline("Decode", request_id, hidden, position_ids)
             next_token = self._logits(hidden).argmax(dim=-1)
             generated.append(next_token.item())
+            total_len += 1
             if next_token.item() == self.tokenizer.eos_token_id:
                 break
 
