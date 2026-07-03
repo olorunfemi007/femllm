@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package femllm;
+
+service WorkerService {
+  rpc Prefill(ForwardRequest) returns (ForwardResponse);
+  rpc Decode(ForwardRequest) returns (ForwardResponse);
+  rpc Reset(ResetRequest) returns (ResetResponse);
+}
+
+message ForwardRequest {
+  string request_id = 1;
+  bytes hidden_states = 2;
+  repeated int32 shape = 3;
+  repeated int32 position_ids = 4;
+  int32 layer_idx = 5;
+}
+
+message ForwardResponse {
+  bytes hidden_states = 1;
+  repeated int32 shape = 2;
+}
+
+message ResetRequest {
+  string request_id = 1;
+}
+
+message ResetResponse {}

@@ -1,8 +1,6 @@
 .venv/
 models/
 shards/
-src/femllm_pb2.py
-src/femllm_pb2_grpc.py
 __pycache__/
 *.pyc
 .pytest_cache/
