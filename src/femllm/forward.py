@@ -16,10 +16,10 @@ class ModelConfig:
 
 
 def rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
-    orig_dtype = x.dtype
+    input_dtype = x.dtype
     variance = x.to(torch.float32).pow(2).mean(-1, keepdim=True)
-    x = x * torch.rsqrt(variance + eps)
-    return (weight * x).to(orig_dtype)
+    x = (x.to(torch.float32) * torch.rsqrt(variance + eps)).to(input_dtype)
+    return weight * x
 
 
 def _build_rope(seq_len: int, head_dim: int, theta: float, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
