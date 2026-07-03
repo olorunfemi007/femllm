@@ -2,6 +2,7 @@
 import sys
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, "src")
 
 import torch
@@ -84,3 +85,8 @@ class Coordinator:
             stub.Reset(femllm_pb2.ResetRequest(request_id=request_id))
 
         return self.tokenizer.decode(generated, skip_special_tokens=True)
+
+    def generate_concurrent(self, prompts: list[str], max_new_tokens: int = 50) -> list[str]:
+        with ThreadPoolExecutor(max_workers=len(prompts)) as pool:
+            futures = [pool.submit(self.generate, prompt, max_new_tokens) for prompt in prompts]
+            return [f.result() for f in futures]
