@@ -64,7 +64,7 @@ class WorkerServicer(femllm_pb2_grpc.WorkerServiceServicer):
 
 def serve(shard_path: str, layer_indices: list[int], config: ModelConfig, port: int, window_size: int = 1) -> None:
     worker = Worker(shard_path, layer_indices, config, window_size)
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=32))
     femllm_pb2_grpc.add_WorkerServiceServicer_to_server(WorkerServicer(worker), server)
     server.add_insecure_port(f"[::]:{port}")
     server.start()
