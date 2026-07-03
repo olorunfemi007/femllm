@@ -49,6 +49,71 @@ def _apply_rope(q: torch.Tensor, k: torch.Tensor, position_ids: torch.Tensor, th
     return q_rot, k_rot
 
 
+def _apply_rope_per_row(
+    q: torch.Tensor, k: torch.Tensor, position_ids: torch.Tensor, theta: float
+) -> tuple[torch.Tensor, torch.Tensor]:
+    # q, k: [N, heads, 1, head_dim]; position_ids: [N], one absolute position per row
+    max_pos = position_ids.max().item() + 1
+    head_dim = q.shape[-1]
+    cos, sin = _build_rope(max_pos, head_dim, theta, q.dtype)
+    cos = cos[position_ids].unsqueeze(1).unsqueeze(1)  # [N, 1, 1, head_dim]
+    sin = sin[position_ids].unsqueeze(1).unsqueeze(1)
+    q_rot = (q * cos) + (_rotate_half(q) * sin)
+    k_rot = (k * cos) + (_rotate_half(k) * sin)
+    return q_rot, k_rot
+
+
+def forward_layer_decode_batch(
+    weights: dict[str, torch.Tensor],
+    hidden_states: torch.Tensor,
+    position_ids: torch.Tensor,
+    kv_caches: list[dict[int, tuple[torch.Tensor, torch.Tensor]]],
+    layer_idx: int,
+    config: ModelConfig,
+) -> torch.Tensor:
+    n = hidden_states.shape[0]
+
+    residual = hidden_states
+    hidden_states = rms_norm(hidden_states, weights["input_layernorm.weight"], config.rms_norm_eps)
+
+    q = hidden_states @ weights["self_attn.q_proj.weight"].T
+    k = hidden_states @ weights["self_attn.k_proj.weight"].T
+    v = hidden_states @ weights["self_attn.v_proj.weight"].T
+
+    q = q.view(n, 1, config.num_heads, config.head_dim).transpose(1, 2)
+    k = k.view(n, 1, config.num_kv_heads, config.head_dim).transpose(1, 2)
+    v = v.view(n, 1, config.num_kv_heads, config.head_dim).transpose(1, 2)
+
+    q, k = _apply_rope_per_row(q, k, position_ids, config.rope_theta)
+
+    groups = config.num_heads // config.num_kv_heads
+    attn_outputs = []
+    for i in range(n):
+        k_i, v_i = k[i:i + 1], v[i:i + 1]
+        if layer_idx in kv_caches[i]:
+            k_past, v_past = kv_caches[i][layer_idx]
+            k_i = torch.cat([k_past, k_i], dim=2)
+            v_i = torch.cat([v_past, v_i], dim=2)
+        kv_caches[i][layer_idx] = (k_i, v_i)
+
+        k_rep = k_i.repeat_interleave(groups, dim=1)
+        v_rep = v_i.repeat_interleave(groups, dim=1)
+        attn_outputs.append(F.scaled_dot_product_attention(q[i:i + 1], k_rep, v_rep, is_causal=False))
+
+    attn_out = torch.cat(attn_outputs, dim=0)
+    attn_out = attn_out.transpose(1, 2).contiguous().view(n, 1, config.num_heads * config.head_dim)
+    attn_out = attn_out @ weights["self_attn.o_proj.weight"].T
+    hidden_states = residual + attn_out
+
+    residual = hidden_states
+    hidden_states = rms_norm(hidden_states, weights["post_attention_layernorm.weight"], config.rms_norm_eps)
+    gate = F.silu(hidden_states @ weights["mlp.gate_proj.weight"].T)
+    up = hidden_states @ weights["mlp.up_proj.weight"].T
+    hidden_states = (gate * up) @ weights["mlp.down_proj.weight"].T
+
+    return residual + hidden_states
+
+
 def forward_layer(
     weights: dict[str, torch.Tensor],
     hidden_states: torch.Tensor,

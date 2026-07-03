@@ -1,7 +1,7 @@
 import threading
 import torch
 from src.femllm.layer_streamer import LayerStreamer
-from src.femllm.forward import forward_layer, ModelConfig
+from src.femllm.forward import forward_layer, forward_layer_decode_batch, ModelConfig
 
 BATCH_COLLECTION_WINDOW_SECONDS = 0.01
 
@@ -54,8 +54,25 @@ class Worker:
         layer_order = sorted(chunk_weights.keys())
         results: dict[str, torch.Tensor] = {}
 
+        decode_items = [item for item in batch if item[1].shape[1] == 1]
+        prefill_items = [item for item in batch if item[1].shape[1] > 1]
+
+        if decode_items:
+            request_ids = [r[0] for r in decode_items]
+            hidden_states = torch.cat([r[1] for r in decode_items], dim=0)
+            position_ids = torch.tensor([r[2].item() for r in decode_items], dtype=torch.long)
+            kv_caches = [self.kv_caches.setdefault(rid, {}) for rid in request_ids]
+
+            for layer_idx in layer_order:
+                hidden_states = forward_layer_decode_batch(
+                    chunk_weights[layer_idx], hidden_states, position_ids, kv_caches, layer_idx, self.config
+                )
+
+            for i, request_id in enumerate(request_ids):
+                results[request_id] = hidden_states[i:i + 1]
+
         groups: dict[tuple, list[tuple[str, torch.Tensor, torch.Tensor]]] = {}
-        for request_id, hidden_states, position_ids in batch:
+        for request_id, hidden_states, position_ids in prefill_items:
             key = tuple(position_ids.tolist())
             groups.setdefault(key, []).append((request_id, hidden_states, position_ids))
 
