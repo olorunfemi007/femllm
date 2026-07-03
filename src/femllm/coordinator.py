@@ -2,6 +2,7 @@
 import sys
 import json
 import uuid
+import threading
 from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, "src")
 
@@ -17,8 +18,10 @@ from src.femllm.worker_server import tensor_to_bytes, bytes_to_tensor
 
 
 class Coordinator:
-    def __init__(self, model_dir: str, shard_dir: str, worker_ports: list[int], config: ModelConfig):
+    def __init__(self, model_dir: str, shard_dir: str, worker_ports: list[int], config: ModelConfig, num_users: int = 4):
         self.config = config
+        self.num_users = num_users
+        self._admission = threading.Semaphore(num_users)
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
 
         with open(f"{shard_dir}/manifest.json") as f:
@@ -61,6 +64,10 @@ class Coordinator:
         return last @ self.lm_head.T
 
     def generate(self, prompt: str, max_new_tokens: int = 50) -> str:
+        with self._admission:
+            return self._generate_admitted(prompt, max_new_tokens)
+
+    def _generate_admitted(self, prompt: str, max_new_tokens: int) -> str:
         input_ids = self.tokenizer(prompt, return_tensors="pt")["input_ids"][0]
         request_id = str(uuid.uuid4())
 
