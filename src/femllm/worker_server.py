@@ -22,9 +22,9 @@ TINYLLAMA_CONFIG = ModelConfig(
 
 def tensor_to_bytes(t: torch.Tensor) -> bytes:
     # torch.Tensor.numpy() has no bfloat16 support (numpy has no native bfloat16
-    # dtype); view as uint16 first, symmetric with bytes_to_tensor's reverse view.
+    # dtype); view as int16 first, symmetric with bytes_to_tensor's reverse view.
     if t.dtype == torch.bfloat16:
-        t = t.view(torch.uint16)
+        t = t.view(torch.int16)
     return t.contiguous().numpy().tobytes()
 
 

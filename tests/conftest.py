@@ -1,6 +1,9 @@
 import pytest
 import os
 
+# manual scripts require a running worker server; never collect them
+collect_ignore_glob = ["test_*_manual.py"]
+
 MODEL_DIR = "models/tinyllama"
 
 @pytest.fixture(scope="session")
