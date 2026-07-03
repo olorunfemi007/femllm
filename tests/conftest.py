@@ -10,15 +10,17 @@ def model_dir():
     return MODEL_DIR
 
 @pytest.fixture(scope="session")
-def shard_dir(tmp_path_factory, model_dir):
+def shard_dir(model_dir):
     from tools.split_model import split_model
-    out = str(tmp_path_factory.mktemp("shards"))
-    split_model(model_dir, out, num_workers=4, window_size=1)
+    out = "shards/tinyllama"
+    if not os.path.exists(os.path.join(out, "manifest.json")):
+        split_model(model_dir, out, num_workers=4, window_size=1)
     return out
 
 @pytest.fixture(scope="session")
-def shard_dir_w2(tmp_path_factory, model_dir):
+def shard_dir_w2(model_dir):
     from tools.split_model import split_model
-    out = str(tmp_path_factory.mktemp("shards_w2"))
-    split_model(model_dir, out, num_workers=4, window_size=2)
+    out = "shards/tinyllama_w2"
+    if not os.path.exists(os.path.join(out, "manifest.json")):
+        split_model(model_dir, out, num_workers=4, window_size=2)
     return out
