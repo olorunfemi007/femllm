@@ -13,13 +13,13 @@ from transformers import AutoTokenizer
 import femllm_pb2
 import femllm_pb2_grpc
 
-from src.femllm.forward import rms_norm, ModelConfig
+from src.femllm.forward import rms_norm, ModelConfig, load_model_config
 from src.femllm.worker_server import tensor_to_bytes, bytes_to_tensor
 
 
 class Coordinator:
-    def __init__(self, model_dir: str, shard_dir: str, worker_ports: list[int], config: ModelConfig, num_users: int = 4, max_context_length: int = 2048):
-        self.config = config
+    def __init__(self, model_dir: str, shard_dir: str, worker_addresses: list[str], config: ModelConfig | None = None, num_users: int = 4, max_context_length: int = 2048):
+        self.config = config if config is not None else load_model_config(model_dir)
         self.num_users = num_users
         self.max_context_length = max_context_length
         self._admission = threading.Semaphore(num_users)
@@ -37,8 +37,8 @@ class Coordinator:
             self.lm_head = f.get_tensor("lm_head.weight").to(torch.bfloat16)
 
         self.stubs = []
-        for port in worker_ports:
-            channel = grpc.insecure_channel(f"localhost:{port}")
+        for address in worker_addresses:
+            channel = grpc.insecure_channel(address)
             self.stubs.append(femllm_pb2_grpc.WorkerServiceStub(channel))
 
     def _make_request(self, request_id: str, hidden: torch.Tensor, position_ids: torch.Tensor, layer_idx: int) -> femllm_pb2.ForwardRequest:

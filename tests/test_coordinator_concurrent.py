@@ -14,13 +14,13 @@ TINYLLAMA_CONFIG = ModelConfig(
     hidden_size=2048, num_heads=32, num_kv_heads=4, head_dim=64,
     intermediate_size=5632, rms_norm_eps=1e-5, rope_theta=10000.0,
 )
-WORKER_PORTS = [50051, 50052, 50053, 50054]
+WORKER_ADDRESSES = [f"localhost:{p}" for p in [50051, 50052, 50053, 50054]]
 
 def test_generate_concurrent_matches_sequential_generate():
     coord = Coordinator(
         model_dir="models/tinyllama",
         shard_dir="shards/tinyllama",
-        worker_ports=WORKER_PORTS,
+        worker_addresses=WORKER_ADDRESSES,
         config=TINYLLAMA_CONFIG,
     )
     prompts = ["The capital of France is", "The capital of Japan is", "Two plus two is"]
@@ -34,7 +34,7 @@ def test_generate_concurrent_returns_results_in_prompt_order():
     coord = Coordinator(
         model_dir="models/tinyllama",
         shard_dir="shards/tinyllama",
-        worker_ports=WORKER_PORTS,
+        worker_addresses=WORKER_ADDRESSES,
         config=TINYLLAMA_CONFIG,
     )
     prompts = ["Hello", "Goodbye", "Thank you"]

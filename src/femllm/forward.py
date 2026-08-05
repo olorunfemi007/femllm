@@ -1,4 +1,6 @@
+import json
 import math
+import os
 from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
@@ -13,6 +15,30 @@ class ModelConfig:
     intermediate_size: int
     rms_norm_eps: float
     rope_theta: float
+
+
+def load_model_config(model_dir: str) -> ModelConfig:
+    with open(os.path.join(model_dir, "config.json")) as f:
+        config = json.load(f)
+
+    if config.get("attention_bias", False):
+        raise ValueError(f"{model_dir}: attention_bias=True is not supported by forward.py")
+    if config.get("rope_scaling") is not None:
+        raise ValueError(f"{model_dir}: rope_scaling is not supported by forward.py")
+    if config.get("tie_word_embeddings", False):
+        raise ValueError(f"{model_dir}: tie_word_embeddings=True is not supported by coordinator.py")
+
+    hidden_size = config["hidden_size"]
+    num_heads = config["num_attention_heads"]
+    return ModelConfig(
+        hidden_size=hidden_size,
+        num_heads=num_heads,
+        num_kv_heads=config.get("num_key_value_heads", num_heads),
+        head_dim=hidden_size // num_heads,
+        intermediate_size=config["intermediate_size"],
+        rms_norm_eps=config["rms_norm_eps"],
+        rope_theta=config["rope_theta"],
+    )
 
 
 def rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:

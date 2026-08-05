@@ -7,6 +7,7 @@ import subprocess
 
 def main():
     shard_dir = sys.argv[1]
+    model_dir = sys.argv[2]
     base_port = 50051
 
     with open(f"{shard_dir}/manifest.json") as f:
@@ -19,6 +20,7 @@ def main():
             sys.executable, "-m", "src.femllm.worker_server",
             "--shard", f"{shard_dir}/{worker['shard_file']}",
             "--manifest", f"{shard_dir}/manifest.json",
+            "--model-dir", model_dir,
             "--worker-id", str(worker["id"]),
             "--port", str(port),
         ]

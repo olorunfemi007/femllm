@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "jupyter": {
+      "command": "/Users/femi/miniforge3/bin/mcp-server-jupyter",
+      "args": []
+    }
+  }
+}

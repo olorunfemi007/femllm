@@ -12,12 +12,7 @@ import femllm_pb2
 import femllm_pb2_grpc
 
 from src.femllm.worker import Worker
-from src.femllm.forward import ModelConfig
-
-TINYLLAMA_CONFIG = ModelConfig(
-    hidden_size=2048, num_heads=32, num_kv_heads=4, head_dim=64,
-    intermediate_size=5632, rms_norm_eps=1e-5, rope_theta=10000.0,
-)
+from src.femllm.forward import ModelConfig, load_model_config
 
 
 def tensor_to_bytes(t: torch.Tensor) -> bytes:
@@ -76,6 +71,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--shard", required=True)
     parser.add_argument("--manifest", required=True)
+    parser.add_argument("--model-dir", required=True)
     parser.add_argument("--worker-id", type=int, required=True)
     parser.add_argument("--port", type=int, required=True)
     args = parser.parse_args()
@@ -84,4 +80,5 @@ if __name__ == "__main__":
         manifest = json.load(f)
     worker_entry = next(w for w in manifest["workers"] if w["id"] == args.worker_id)
 
-    serve(args.shard, worker_entry["layer_indices"], TINYLLAMA_CONFIG, args.port, manifest["window_size"])
+    config = load_model_config(args.model_dir)
+    serve(args.shard, worker_entry["layer_indices"], config, args.port, manifest["window_size"])

@@ -1,0 +1,11 @@
+.venv/
+models/
+shards/
+__pycache__/
+*.pyc
+.pytest_cache/
+.worktrees/
+.git/
+.DS_Store
+tests/
+docs/
