@@ -1,8 +1,40 @@
 import json
 import os
 import sys
+from collections import defaultdict
 from safetensors import safe_open
 from safetensors.torch import save_file
+
+
+def _index_source_files(model_dir: str) -> dict[str, str]:
+    """Map each tensor key to the source .safetensors file that contains it,
+    without loading any tensor data — safe_open only reads each file's header."""
+    key_to_file: dict[str, str] = {}
+    for filename in sorted(os.listdir(model_dir)):
+        if filename.endswith(".safetensors"):
+            path = os.path.join(model_dir, filename)
+            with safe_open(path, framework="pt", device="cpu") as f:
+                for key in f.keys():
+                    key_to_file[key] = path
+    return key_to_file
+
+
+def _save_shard(key_to_file: dict[str, str], keys: list[str], output_path: str) -> None:
+    """Write one output shard, loading only the tensors it needs. Keys are
+    grouped by source file so each source file is opened once per shard and
+    only the needed tensors are pulled out of it — peak memory is bounded by
+    this one shard's total tensor size, never the whole source model."""
+    keys_by_file: dict[str, list[str]] = defaultdict(list)
+    for key in keys:
+        keys_by_file[key_to_file[key]].append(key)
+
+    tensors = {}
+    for path, file_keys in keys_by_file.items():
+        with safe_open(path, framework="pt", device="cpu") as f:
+            for key in file_keys:
+                tensors[key] = f.get_tensor(key)
+
+    save_file(tensors, output_path)
 
 
 def split_model(model_dir: str, output_dir: str, num_workers: int, window_size: int = 1) -> None:
@@ -10,17 +42,11 @@ def split_model(model_dir: str, output_dir: str, num_workers: int, window_size: 
         config = json.load(f)
     num_layers = config["num_hidden_layers"]
 
-    tensors = {}
-    for filename in sorted(os.listdir(model_dir)):
-        if filename.endswith(".safetensors"):
-            with safe_open(os.path.join(model_dir, filename), framework="pt", device="cpu") as f:
-                for key in f.keys():
-                    tensors[key] = f.get_tensor(key)
-
+    key_to_file = _index_source_files(model_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    coordinator_tensors = {k: v for k, v in tensors.items() if not k.startswith("model.layers.")}
-    save_file(coordinator_tensors, os.path.join(output_dir, "coordinator.safetensors"))
+    coordinator_keys = [k for k in key_to_file if not k.startswith("model.layers.")]
+    _save_shard(key_to_file, coordinator_keys, os.path.join(output_dir, "coordinator.safetensors"))
 
     worker_layers: dict[int, list[int]] = {i: [] for i in range(num_workers)}
     for layer_idx in range(num_layers):
@@ -37,11 +63,11 @@ def split_model(model_dir: str, output_dir: str, num_workers: int, window_size: 
 
     for worker_idx in range(num_workers):
         layer_indices = worker_layers[worker_idx]
-        worker_tensors = {
-            k: v for k, v in tensors.items()
+        worker_keys = [
+            k for k in key_to_file
             if k.startswith("model.layers.") and int(k.split(".")[2]) in layer_indices
-        }
-        save_file(worker_tensors, os.path.join(output_dir, f"worker_{worker_idx}.safetensors"))
+        ]
+        _save_shard(key_to_file, worker_keys, os.path.join(output_dir, f"worker_{worker_idx}.safetensors"))
 
         manifest["workers"].append({
             "id": worker_idx,
