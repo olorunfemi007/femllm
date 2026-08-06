@@ -5,6 +5,15 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
+# Opt-in escape hatch, off by default. Some virtualized CPU environments
+# (observed: Docker Desktop's ARM64 VM on Apple Silicon) advertise BF16
+# hardware instructions via cpuinfo that PyTorch's oneDNN backend then
+# selects for bf16 matmul, but that the VM can't actually execute safely —
+# SIGILL, not a femllm bug. Real deployment targets (GCP e2-* x86_64 nodes)
+# don't hit this, so mkldnn stays on unless explicitly disabled.
+if os.environ.get("FEMLLM_DISABLE_MKLDNN") == "1":
+    torch.backends.mkldnn.enabled = False
+
 
 @dataclass
 class ModelConfig:
