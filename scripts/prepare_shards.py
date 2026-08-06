@@ -30,7 +30,7 @@ def _wait_for_marker(ready_marker: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo-id", required=True, help="HuggingFace repo id, e.g. openlm-research/open_llama_3b_v2")
+    parser.add_argument("--repo-id", required=True, help="HuggingFace repo id, must ship .safetensors (e.g. danielhanchen/open_llama_3b_600bt_preview, not openlm-research/open_llama_3b_v2 which only has pytorch_model.bin)")
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--shard-dir", required=True)
     parser.add_argument("--num-workers", type=int, required=True)

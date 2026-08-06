@@ -9,7 +9,12 @@ def load_layer_weights(shard_path: str, layer_idx: int) -> dict[str, torch.Tenso
         for key in f.keys():
             if key.startswith(prefix):
                 local_key = key[len(prefix):]
-                weights[local_key] = f.get_tensor(key)
+                # Cast to bf16 regardless of the source checkpoint's native
+                # dtype (fp16, fp32, ...) — activations flowing through the
+                # pipeline are always bf16 (coordinator casts embed_tokens/
+                # lm_head the same way), so uncast weights of another dtype
+                # would fail at the first matmul.
+                weights[local_key] = f.get_tensor(key).to(torch.bfloat16)
     if not weights:
         raise KeyError(f"No weights found for layer {layer_idx} in {shard_path}")
     return weights
