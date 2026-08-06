@@ -45,8 +45,11 @@ def load_model_config(model_dir: str) -> ModelConfig:
         num_kv_heads=config.get("num_key_value_heads", num_heads),
         head_dim=hidden_size // num_heads,
         intermediate_size=config["intermediate_size"],
-        rms_norm_eps=config["rms_norm_eps"],
-        rope_theta=config["rope_theta"],
+        # Both have HF LlamaConfig defaults and are legitimately absent from
+        # older config.json files (e.g. open_llama_3b_v2 predates rope_theta
+        # being a serialized field) — default rather than require.
+        rms_norm_eps=config.get("rms_norm_eps", 1e-6),
+        rope_theta=config.get("rope_theta", 10000.0),
     )
 
 
