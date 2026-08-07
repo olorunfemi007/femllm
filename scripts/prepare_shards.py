@@ -22,6 +22,18 @@ import os
 import shutil
 import sys
 import time
+
+# Must be set before huggingface_hub is imported — it checks this at import
+# time to decide whether to use the Xet storage backend (hf_xet package,
+# installed automatically as a transitive dependency). Xet does
+# content-defined chunking/deduplication rather than a simple streaming
+# write-to-disk, which needs meaningfully more memory for a single multi-GB
+# file than plain HTTP download — confirmed as the actual cause of repeated
+# OOM-kills here (always at ~89% through fetching, on the large safetensors
+# file, regardless of tools/split_model.py's own memory-bounded design,
+# which never even got a chance to run).
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 from huggingface_hub import snapshot_download
 
 sys.path.insert(0, ".")
