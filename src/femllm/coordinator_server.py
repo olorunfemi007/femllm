@@ -6,6 +6,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, "src")
 
+import grpc
+
 from src.femllm.coordinator import Coordinator
 
 
@@ -45,6 +47,13 @@ class CoordinatorHandler(BaseHTTPRequestHandler):
         except ValueError as e:
             self._send_json(400, {"error": str(e)})
             return
+        except grpc.RpcError as e:
+            # A worker timed out or was unreachable (Coordinator._pipeline's
+            # per-hop deadline). Without this, an unhandled exception here
+            # just prints a traceback to stderr and the client sees a broken
+            # connection rather than a clean error response.
+            self._send_json(503, {"error": f"a worker did not respond in time: {e.code()}"})
+            return
 
         self._send_json(200, {"text": text})
 
@@ -59,6 +68,7 @@ def serve(
     port: int,
     num_users: int = 4,
     max_context_length: int = 2048,
+    worker_timeout_seconds: float = 30.0,
 ) -> None:
     coordinator = Coordinator(
         model_dir=model_dir,
@@ -66,6 +76,7 @@ def serve(
         worker_addresses=worker_addresses,
         num_users=num_users,
         max_context_length=max_context_length,
+        worker_timeout_seconds=worker_timeout_seconds,
     )
     CoordinatorHandler.coordinator = coordinator
 
@@ -82,6 +93,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--num-users", type=int, default=4)
     parser.add_argument("--max-context-length", type=int, default=2048)
+    parser.add_argument("--worker-timeout-seconds", type=float, default=30.0)
     args = parser.parse_args()
 
     serve(
@@ -91,4 +103,5 @@ if __name__ == "__main__":
         port=args.port,
         num_users=args.num_users,
         max_context_length=args.max_context_length,
+        worker_timeout_seconds=args.worker_timeout_seconds,
     )

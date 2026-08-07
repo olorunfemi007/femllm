@@ -18,10 +18,11 @@ from src.femllm.worker_server import tensor_to_bytes, bytes_to_tensor
 
 
 class Coordinator:
-    def __init__(self, model_dir: str, shard_dir: str, worker_addresses: list[str], config: ModelConfig | None = None, num_users: int = 4, max_context_length: int = 2048):
+    def __init__(self, model_dir: str, shard_dir: str, worker_addresses: list[str], config: ModelConfig | None = None, num_users: int = 4, max_context_length: int = 2048, worker_timeout_seconds: float = 30.0):
         self.config = config if config is not None else load_model_config(model_dir)
         self.num_users = num_users
         self.max_context_length = max_context_length
+        self.worker_timeout_seconds = worker_timeout_seconds
         self._admission = threading.Semaphore(num_users)
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
 
@@ -51,11 +52,19 @@ class Coordinator:
         )
 
     def _pipeline(self, method: str, request_id: str, hidden: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        # Per-hop deadline — without this, a stub call to a down/unreachable
+        # worker (crash-looping, node NotReady, ...) blocks forever with no
+        # error, since grpc's default is no deadline at all. Every request
+        # touching that worker's layers would hang indefinitely instead of
+        # failing fast, taking the whole coordinator down with it from the
+        # caller's perspective (observed in production as an NGINX 502 after
+        # its own much longer proxy-read-timeout, with nothing useful logged
+        # coordinator-side in the meantime).
         for start_layer_idx in range(0, self.num_layers, self.window_size):
             worker_id = (start_layer_idx // self.window_size) % self.num_workers
             stub = self.stubs[worker_id]
             req = self._make_request(request_id, hidden, position_ids, start_layer_idx)
-            resp = getattr(stub, method)(req)
+            resp = getattr(stub, method)(req, timeout=self.worker_timeout_seconds)
             hidden = bytes_to_tensor(resp.hidden_states, list(resp.shape), torch.bfloat16)
         return hidden
 
@@ -98,8 +107,15 @@ class Coordinator:
             if next_token.item() == self.tokenizer.eos_token_id:
                 break
 
+        # Best-effort: an unreachable worker here shouldn't stop the others
+        # from having their (already-complete) KV cache for this request
+        # cleared, and shouldn't turn a successful generation into a failed
+        # response over a cleanup step.
         for stub in self.stubs:
-            stub.Reset(femllm_pb2.ResetRequest(request_id=request_id))
+            try:
+                stub.Reset(femllm_pb2.ResetRequest(request_id=request_id), timeout=self.worker_timeout_seconds)
+            except grpc.RpcError as e:
+                print(f"Reset({request_id!r}) failed on a worker (continuing): {e}")
 
         return self.tokenizer.decode(generated, skip_special_tokens=True)
 
