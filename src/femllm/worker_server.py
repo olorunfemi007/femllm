@@ -2,6 +2,7 @@
 import sys
 import json
 import argparse
+import time
 from concurrent import futures
 
 sys.path.insert(0, "src")
@@ -34,36 +35,48 @@ def bytes_to_tensor(data: bytes, shape: list[int], dtype: torch.dtype) -> torch.
 
 
 class WorkerServicer(femllm_pb2_grpc.WorkerServiceServicer):
-    def __init__(self, worker: Worker):
+    def __init__(self, worker: Worker, worker_id: int):
         self.worker = worker
+        self.worker_id = worker_id
 
-    def _run_forward(self, request) -> femllm_pb2.ForwardResponse:
+    def _run_forward(self, method: str, request) -> femllm_pb2.ForwardResponse:
+        # Per-hop logging — without this there is no way to observe requests
+        # actually reaching a worker or the round-robin routing in action;
+        # kubectl logs on a worker showed nothing at all per-request before
+        # this. Timed so a hang inside worker.forward() (e.g. stuck in the
+        # belt's chunk queue) is visible as a start line with no matching
+        # done line, not just silence.
+        print(f"[worker {self.worker_id}] {method} request_id={request.request_id} layer_idx={request.layer_idx} shape={list(request.shape)}")
+        start = time.monotonic()
         hidden = bytes_to_tensor(request.hidden_states, list(request.shape), torch.bfloat16)
         position_ids = torch.tensor(list(request.position_ids), dtype=torch.long)
         out = self.worker.forward(hidden, position_ids, request.request_id, request.layer_idx)
+        elapsed = time.monotonic() - start
+        print(f"[worker {self.worker_id}] {method} request_id={request.request_id} layer_idx={request.layer_idx} done in {elapsed:.3f}s")
         return femllm_pb2.ForwardResponse(
             hidden_states=tensor_to_bytes(out),
             shape=list(out.shape),
         )
 
     def Prefill(self, request, context):
-        return self._run_forward(request)
+        return self._run_forward("Prefill", request)
 
     def Decode(self, request, context):
-        return self._run_forward(request)
+        return self._run_forward("Decode", request)
 
     def Reset(self, request, context):
+        print(f"[worker {self.worker_id}] Reset request_id={request.request_id}")
         self.worker.reset(request.request_id)
         return femllm_pb2.ResetResponse()
 
 
-def serve(shard_path: str, layer_indices: list[int], config: ModelConfig, port: int, window_size: int = 1) -> None:
+def serve(shard_path: str, layer_indices: list[int], config: ModelConfig, port: int, worker_id: int, window_size: int = 1) -> None:
     worker = Worker(shard_path, layer_indices, config, window_size)
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=32))
-    femllm_pb2_grpc.add_WorkerServiceServicer_to_server(WorkerServicer(worker), server)
+    femllm_pb2_grpc.add_WorkerServiceServicer_to_server(WorkerServicer(worker, worker_id), server)
     server.add_insecure_port(f"[::]:{port}")
     server.start()
-    print(f"Worker serving layers {layer_indices} (window_size={window_size}) on port {port}")
+    print(f"Worker {worker_id} serving layers {layer_indices} (window_size={window_size}) on port {port}")
     server.wait_for_termination()
 
 
@@ -81,4 +94,4 @@ if __name__ == "__main__":
     worker_entry = next(w for w in manifest["workers"] if w["id"] == args.worker_id)
 
     config = load_model_config(args.model_dir)
-    serve(args.shard, worker_entry["layer_indices"], config, args.port, manifest["window_size"])
+    serve(args.shard, worker_entry["layer_indices"], config, args.port, worker_id=args.worker_id, window_size=manifest["window_size"])

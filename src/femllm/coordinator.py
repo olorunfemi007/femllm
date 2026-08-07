@@ -65,6 +65,11 @@ class Coordinator:
             worker_id = (start_layer_idx // self.window_size) % self.num_workers
             stub = self.stubs[worker_id]
             req = self._make_request(request_id, hidden, position_ids, start_layer_idx)
+            # Dispatch-side half of the per-hop logging in worker_server.py's
+            # _run_forward — this line appearing with no matching "[worker N]
+            # {method} ... done" line on that worker's own logs is exactly
+            # how to see which hop a stuck request is stuck on.
+            print(f"[coordinator] -> worker {worker_id} {method} request_id={request_id} layer_idx={start_layer_idx}")
             resp = getattr(stub, method)(req, timeout=self.worker_timeout_seconds)
             hidden = bytes_to_tensor(resp.hidden_states, list(resp.shape), torch.bfloat16)
         return hidden
