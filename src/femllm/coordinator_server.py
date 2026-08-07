@@ -47,6 +47,13 @@ class CoordinatorHandler(BaseHTTPRequestHandler):
         except ValueError as e:
             self._send_json(400, {"error": str(e)})
             return
+        except TimeoutError as e:
+            # Couldn't get an admission slot (Coordinator.generate) — the
+            # coordinator is either genuinely at capacity or a prior request
+            # is stuck holding a slot. Distinct from the grpc.RpcError case
+            # below: this fires before any worker is even contacted.
+            self._send_json(503, {"error": str(e)})
+            return
         except grpc.RpcError as e:
             # A worker timed out or was unreachable (Coordinator._pipeline's
             # per-hop deadline). Without this, an unhandled exception here
@@ -69,6 +76,7 @@ def serve(
     num_users: int = 4,
     max_context_length: int = 2048,
     worker_timeout_seconds: float = 30.0,
+    admission_timeout_seconds: float = 10.0,
 ) -> None:
     coordinator = Coordinator(
         model_dir=model_dir,
@@ -77,6 +85,7 @@ def serve(
         num_users=num_users,
         max_context_length=max_context_length,
         worker_timeout_seconds=worker_timeout_seconds,
+        admission_timeout_seconds=admission_timeout_seconds,
     )
     CoordinatorHandler.coordinator = coordinator
 
@@ -94,6 +103,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-users", type=int, default=4)
     parser.add_argument("--max-context-length", type=int, default=2048)
     parser.add_argument("--worker-timeout-seconds", type=float, default=30.0)
+    parser.add_argument("--admission-timeout-seconds", type=float, default=10.0)
     args = parser.parse_args()
 
     serve(
@@ -104,4 +114,5 @@ if __name__ == "__main__":
         num_users=args.num_users,
         max_context_length=args.max_context_length,
         worker_timeout_seconds=args.worker_timeout_seconds,
+        admission_timeout_seconds=args.admission_timeout_seconds,
     )

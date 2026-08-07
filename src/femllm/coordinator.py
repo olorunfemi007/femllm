@@ -18,11 +18,12 @@ from src.femllm.worker_server import tensor_to_bytes, bytes_to_tensor
 
 
 class Coordinator:
-    def __init__(self, model_dir: str, shard_dir: str, worker_addresses: list[str], config: ModelConfig | None = None, num_users: int = 4, max_context_length: int = 2048, worker_timeout_seconds: float = 30.0):
+    def __init__(self, model_dir: str, shard_dir: str, worker_addresses: list[str], config: ModelConfig | None = None, num_users: int = 4, max_context_length: int = 2048, worker_timeout_seconds: float = 30.0, admission_timeout_seconds: float = 10.0):
         self.config = config if config is not None else load_model_config(model_dir)
         self.num_users = num_users
         self.max_context_length = max_context_length
         self.worker_timeout_seconds = worker_timeout_seconds
+        self.admission_timeout_seconds = admission_timeout_seconds
         self._admission = threading.Semaphore(num_users)
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
 
@@ -74,8 +75,25 @@ class Coordinator:
         return last @ self.lm_head.T
 
     def generate(self, prompt: str, max_new_tokens: int = 50) -> str:
-        with self._admission:
+        # threading.Semaphore.acquire() has no timeout by default — with
+        # num_users this tight (often 1, to bound KV-cache memory on
+        # constrained nodes), a single stuck request (e.g. one that predates
+        # worker_timeout_seconds being added, or hit some other unbounded
+        # wait) would permanently block every request after it with nothing
+        # to show for it: no error, no log, just silence until whatever sits
+        # in front of this (NGINX, the LB) gives up on its own much longer
+        # timeout. Observed in production as a 300s NGINX 499 with zero bytes
+        # ever received from the coordinator.
+        if not self._admission.acquire(timeout=self.admission_timeout_seconds):
+            raise TimeoutError(
+                f"No admission slot free within {self.admission_timeout_seconds}s "
+                f"(num_users={self.num_users}) — the coordinator is either at "
+                "capacity or a prior request is stuck holding a slot."
+            )
+        try:
             return self._generate_admitted(prompt, max_new_tokens)
+        finally:
+            self._admission.release()
 
     def _generate_admitted(self, prompt: str, max_new_tokens: int) -> str:
         input_ids = self.tokenizer(prompt, return_tensors="pt")["input_ids"][0]
