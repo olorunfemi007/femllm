@@ -9,6 +9,13 @@ Idempotent: skips all work if --ready-marker already exists. Safe under
 concurrent coordinator replicas: uses an mkdir-based lock (atomic on POSIX
 and NFS) so only one replica does the download+split; the others wait for
 the marker instead of racing to write the same shard files.
+
+The lock is staleness-checked: if a replica dies mid-download (OOMKilled,
+pod eviction, node preemption — anything that sends SIGKILL skips Python's
+`finally` cleanup entirely), waiters would otherwise poll forever for a
+marker nobody's still working toward. After LOCK_STALE_SECONDS with no sign
+the lock holder is still around, a waiter assumes it's dead, clears it, and
+retries acquiring it itself.
 """
 import argparse
 import os
@@ -20,12 +27,32 @@ from huggingface_hub import snapshot_download
 sys.path.insert(0, ".")
 from tools.split_model import split_model
 
+LOCK_STALE_SECONDS = 900  # generous vs. real split time (~seconds), bounds worst-case hang
 
-def _wait_for_marker(ready_marker: str) -> None:
-    print(f"Another replica is already preparing shards — waiting for {ready_marker} ...")
-    while not os.path.exists(ready_marker):
-        time.sleep(5)
-    print("Shards ready (prepared by another replica).")
+
+def _acquire_lock_or_defer(ready_marker: str, lock_dir: str) -> bool:
+    """True: caller acquired the lock and should do the work.
+    False: the marker appeared (someone else finished) — caller should skip."""
+    while True:
+        if os.path.exists(ready_marker):
+            return False
+        try:
+            os.mkdir(lock_dir)
+            return True
+        except FileExistsError:
+            pass
+
+        print(f"Another replica is already preparing shards — waiting for {ready_marker} ...")
+        waited = 0
+        while os.path.exists(lock_dir) and not os.path.exists(ready_marker):
+            time.sleep(5)
+            waited += 5
+            if waited >= LOCK_STALE_SECONDS:
+                print(f"{lock_dir} held for over {LOCK_STALE_SECONDS}s with no progress — assuming its owner died, clearing it.")
+                shutil.rmtree(lock_dir, ignore_errors=True)
+                break
+        # Loop back around: marker may now exist, or the lock is free (cleared
+        # or genuinely released) to try acquiring ourselves.
 
 
 def main():
@@ -44,18 +71,11 @@ def main():
 
     lock_dir = args.ready_marker + ".lock"
     os.makedirs(os.path.dirname(args.ready_marker) or ".", exist_ok=True)
-    try:
-        os.mkdir(lock_dir)
-    except FileExistsError:
-        _wait_for_marker(args.ready_marker)
+    if not _acquire_lock_or_defer(args.ready_marker, lock_dir):
+        print("Shards ready (prepared by another replica).")
         return
 
     try:
-        # Re-check: another replica may have finished between our first check and acquiring the lock.
-        if os.path.exists(args.ready_marker):
-            print(f"{args.ready_marker} already exists, skipping.")
-            return
-
         print(f"Downloading {args.repo_id} to {args.model_dir} ...")
         snapshot_download(
             repo_id=args.repo_id,

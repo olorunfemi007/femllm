@@ -1,3 +1,4 @@
+import gc
 import json
 import os
 import sys
@@ -23,7 +24,13 @@ def _save_shard(key_to_file: dict[str, str], keys: list[str], output_path: str) 
     """Write one output shard, loading only the tensors it needs. Keys are
     grouped by source file so each source file is opened once per shard and
     only the needed tensors are pulled out of it — peak memory is bounded by
-    this one shard's total tensor size, never the whole source model."""
+    this one shard's total tensor size, never the whole source model.
+
+    Explicitly deletes the tensors dict and forces a GC pass before
+    returning — safetensors' get_tensor() is backed by an mmap of the source
+    file, and relying on refcounting alone to release that between shards
+    left more than one shard's worth of memory resident at once on tightly
+    constrained nodes (observed as an OOM-kill in production)."""
     keys_by_file: dict[str, list[str]] = defaultdict(list)
     for key in keys:
         keys_by_file[key_to_file[key]].append(key)
@@ -35,6 +42,8 @@ def _save_shard(key_to_file: dict[str, str], keys: list[str], output_path: str) 
                 tensors[key] = f.get_tensor(key)
 
     save_file(tensors, output_path)
+    del tensors
+    gc.collect()
 
 
 def split_model(model_dir: str, output_dir: str, num_workers: int, window_size: int = 1) -> None:
